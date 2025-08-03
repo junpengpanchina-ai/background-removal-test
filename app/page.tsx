@@ -9,7 +9,12 @@ interface ImageFile {
   preview: string;
   processed?: string;
   status: 'uploading' | 'processing' | 'completed' | 'error';
+  error?: string;
 }
+
+// 背景移除API配置
+const REMOVE_BG_API_KEY = 'gy5GewZD5G38dpf5bNZGp1b8'; // 用户提供的API密钥
+const REMOVE_BG_URL = 'https://api.remove.bg/v1.0/removebg';
 
 export default function Home() {
   const [images, setImages] = useState<ImageFile[]>([]);
@@ -18,6 +23,7 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [processingProgress, setProcessingProgress] = useState(0);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+  const [apiKey, setApiKey] = useState('gy5GewZD5G38dpf5bNZGp1b8');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 键盘快捷键支持
@@ -98,6 +104,64 @@ export default function Home() {
     }
   }, []);
 
+  // 真正的背景移除功能
+  const removeBackground = async (imageFile: File, imageId: string) => {
+    try {
+      // 检查文件大小 (remove.bg 限制 12MB)
+      if (imageFile.size > 12 * 1024 * 1024) {
+        throw new Error('文件大小不能超过12MB');
+      }
+
+      // 检查API密钥
+      const currentApiKey = apiKey || REMOVE_BG_API_KEY;
+      if (!currentApiKey || currentApiKey.length < 10) {
+        throw new Error('API密钥无效，请检查密钥格式');
+      }
+
+      console.log('使用API密钥:', currentApiKey.substring(0, 8) + '...');
+
+      // 创建 FormData
+      const formData = new FormData();
+      formData.append('image_file', imageFile);
+      formData.append('size', 'auto');
+
+      // 调用 remove.bg API
+      const response = await fetch(REMOVE_BG_URL, {
+        method: 'POST',
+        headers: {
+          'X-Api-Key': currentApiKey,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API响应:', response.status, response.statusText);
+        console.error('错误详情:', errorText);
+        throw new Error(`API错误: ${response.status} - ${errorText}`);
+      }
+
+      // 获取处理后的图片
+      const processedBlob = await response.blob();
+      const processedUrl = URL.createObjectURL(processedBlob);
+
+      // 更新状态
+      setImages(prev => prev.map(item => 
+        item.id === imageId 
+          ? { ...item, status: 'completed', processed: processedUrl }
+          : item
+      ));
+
+    } catch (error) {
+      console.error('背景移除失败:', error);
+      setImages(prev => prev.map(item => 
+        item.id === imageId 
+          ? { ...item, status: 'error', error: error instanceof Error ? error.message : '处理失败' }
+          : item
+      ));
+    }
+  };
+
   const addImages = (files: File[]) => {
     const newImages: ImageFile[] = files.map(file => ({
       id: Math.random().toString(36).substr(2, 9),
@@ -108,26 +172,16 @@ export default function Home() {
 
     setImages(prev => [...prev, ...newImages]);
     
-    // 模拟处理过程
+    // 开始处理每张图片
     newImages.forEach((img, index) => {
       setTimeout(() => {
         setImages(prev => prev.map(item => 
           item.id === img.id ? { ...item, status: 'processing' } : item
         ));
         
-        // 模拟进度
-        let progress = 0;
-        const interval = setInterval(() => {
-          progress += 10;
-          setProcessingProgress(progress);
-          if (progress >= 100) {
-            clearInterval(interval);
-            setImages(prev => prev.map(item => 
-              item.id === img.id ? { ...item, status: 'completed', processed: item.preview } : item
-            ));
-          }
-        }, 200);
-      }, index * 1000);
+        // 开始真正的背景移除
+        removeBackground(img.file, img.id);
+      }, index * 1000); // 每张图片间隔1秒开始处理
     });
   };
 
@@ -139,13 +193,19 @@ export default function Home() {
   };
 
   const removeImage = (id: string) => {
-    setImages(prev => prev.filter(img => img.id !== id));
+    setImages(prev => {
+      const image = prev.find(img => img.id === id);
+      if (image?.processed) {
+        URL.revokeObjectURL(image.processed);
+      }
+      return prev.filter(img => img.id !== id);
+    });
   };
 
   const downloadImage = (image: ImageFile) => {
     const link = document.createElement('a');
     link.href = image.processed || image.preview;
-    link.download = `processed_${image.file.name}`;
+    link.download = `removed-bg-${image.file.name.replace(/\.[^/.]+$/, '')}.png`;
     link.click();
   };
 
@@ -154,6 +214,40 @@ export default function Home() {
     completedImages.forEach((image, index) => {
       setTimeout(() => downloadImage(image), index * 100);
     });
+  };
+
+  const retryProcessing = (imageId: string) => {
+    const image = images.find(img => img.id === imageId);
+    if (image) {
+      setImages(prev => prev.map(item => 
+        item.id === imageId ? { ...item, status: 'processing', error: undefined } : item
+      ));
+      removeBackground(image.file, imageId);
+    }
+  };
+
+  // 测试API密钥有效性
+  const testApiKey = async () => {
+    try {
+      const response = await fetch('https://api.remove.bg/v1.0/account', {
+        headers: {
+          'X-Api-Key': apiKey,
+        },
+      });
+      
+      if (response.ok) {
+        const accountInfo = await response.json();
+        console.log('API密钥有效，账户信息:', accountInfo);
+        alert('API密钥验证成功！');
+      } else {
+        const errorText = await response.text();
+        console.error('API密钥验证失败:', errorText);
+        alert(`API密钥验证失败: ${errorText}`);
+      }
+    } catch (error) {
+      console.error('API密钥测试失败:', error);
+      alert('API密钥测试失败，请检查网络连接');
+    }
   };
 
   return (
@@ -167,6 +261,31 @@ export default function Home() {
           </div>
           
           <div className="flex items-center space-x-3">
+            {/* API密钥输入 */}
+            <div className="flex items-center space-x-2">
+              <input
+                type="password"
+                placeholder="输入 Remove.bg API 密钥"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="px-3 py-1 bg-white/10 border border-white/20 rounded text-sm w-48"
+              />
+              <button
+                onClick={testApiKey}
+                className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs font-medium transition-colors"
+              >
+                测试
+              </button>
+              <a 
+                href="https://www.remove.bg/api" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-blue-400 hover:text-blue-300 text-xs"
+              >
+                获取密钥
+              </a>
+            </div>
+
             {/* 批量下载按钮 */}
             {images.filter(img => img.status === 'completed').length > 0 && (
               <button
@@ -234,13 +353,22 @@ export default function Home() {
                 </div>
                 
                 <div>
-                  <h2 className="text-2xl font-bold mb-2 text-responsive">拖拽图片到这里开始处理</h2>
-                  <p className="text-gray-300 mb-6">支持 JPG、PNG、WEBP 格式，最大 10MB</p>
+                  <h2 className="text-2xl font-bold mb-2 text-responsive">拖拽图片到这里移除背景</h2>
+                  <p className="text-gray-300 mb-6">支持 JPG、PNG、WEBP 格式，最大 12MB</p>
+                  
+                  {!apiKey && (
+                    <div className="mb-4 p-3 bg-yellow-500/20 border border-yellow-500/30 rounded-lg">
+                      <p className="text-yellow-300 text-sm">
+                        ⚠️ 请先在上方输入 Remove.bg API 密钥才能使用背景移除功能
+                      </p>
+                    </div>
+                  )}
                   
                   <div className="flex items-center justify-center space-x-4 flex-wrap">
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors btn-hover"
+                      disabled={!apiKey}
                     >
                       选择文件
                     </button>
@@ -248,6 +376,7 @@ export default function Home() {
                     <button 
                       onClick={handlePaste}
                       className="px-6 py-3 border border-white/20 hover:bg-white/10 rounded-lg font-medium transition-colors btn-hover"
+                      disabled={!apiKey}
                     >
                       粘贴图片
                     </button>
@@ -311,6 +440,13 @@ export default function Home() {
                             </svg>
                           </div>
                         )}
+                        {image.status === 'error' && (
+                          <div className="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center">
+                            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </div>
+                        )}
                       </div>
                     </div>
                     
@@ -319,10 +455,13 @@ export default function Home() {
                       
                       {image.status === 'processing' && (
                         <div className="w-full bg-white/10 rounded-full h-2">
-                          <div 
-                            className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${processingProgress}%` }}
-                          />
+                          <div className="bg-blue-500 h-2 rounded-full animate-pulse-slow" style={{ width: '60%' }} />
+                        </div>
+                      )}
+                      
+                      {image.status === 'error' && (
+                        <div className="text-red-400 text-xs bg-red-500/10 p-2 rounded">
+                          {image.error}
                         </div>
                       )}
                       
@@ -333,6 +472,15 @@ export default function Home() {
                         >
                           删除
                         </button>
+                        
+                        {image.status === 'error' && (
+                          <button
+                            onClick={() => retryProcessing(image.id)}
+                            className="px-3 py-1 bg-yellow-600 hover:bg-yellow-700 rounded text-sm font-medium transition-colors btn-hover"
+                          >
+                            重试
+                          </button>
+                        )}
                         
                         {image.status === 'completed' && (
                           <button
